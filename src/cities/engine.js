@@ -593,6 +593,29 @@ function prepareCityData(rawCity) {
       ? { col: rawCity.baekjaMoon.col, row: rawCity.baekjaMoon.row }
       : null;
 
+  const merlion =
+    rawCity.merlion &&
+    Number.isFinite(rawCity.merlion.startRow) &&
+    Number.isFinite(rawCity.merlion.startCol)
+      ? {
+          startRow: rawCity.merlion.startRow,
+          startCol: rawCity.merlion.startCol,
+          mouthCol: Number.isFinite(rawCity.merlion.mouthCol) ? rawCity.merlion.mouthCol : 12.4,
+          mouthRow: Number.isFinite(rawCity.merlion.mouthRow) ? rawCity.merlion.mouthRow : 46.15,
+          splashCol: Number.isFinite(rawCity.merlion.splashCol) ? rawCity.merlion.splashCol : 24.5,
+          splashRow: Number.isFinite(rawCity.merlion.splashRow) ? rawCity.merlion.splashRow : 53.35,
+        }
+      : null;
+
+  let burjReadyTime = 10.4;
+  if (id === "dubai") {
+    const groundLead = revealOrder === "ground-first" ? 2.2 : 0;
+    const burjPhase = normalizedPhases.find((p) => /burj[-_ ]?khalifa/i.test(p.name));
+    if (burjPhase) {
+      burjReadyTime = groundLead + burjPhase.startTime + burjPhase.duration;
+    }
+  }
+
   return {
     id,
     label: rawCity.label || rawCity.title || id.toUpperCase(),
@@ -607,6 +630,8 @@ function prepareCityData(rawCity) {
     revealOrder,
     worldPalette: getWorldPalette(groundType, rawCity.skyPalette),
     baekjaMoon,
+    merlion,
+    burjReadyTime,
     cloudFloat: {
       row: Number.isFinite(cloudFloat.row) ? cloudFloat.row : 6,
       centerCol: Number.isFinite(cloudFloat.centerCol) ? cloudFloat.centerCol : 46,
@@ -848,11 +873,16 @@ export function mountCitySkyline(options) {
     }
   }
 
-  function spawnMeteor(startCol, startRow) {
+  function isDubaiTowerReady(city, t) {
+    return Boolean(city && city.id === "dubai" && t >= city.burjReadyTime);
+  }
+
+  function spawnMeteor(startCol, startRow, userTriggered = false) {
     const cols = activeCity.cols;
-    const c = Number.isFinite(startCol) ? startCol : 8 + Math.random() * (cols - 16);
+    const c = Number.isFinite(startCol) ? startCol : -6 + Math.random() * (cols - 18);
     const r = Number.isFinite(startRow) ? startRow : 2.5 + Math.random() * 11;
-    const dir = c > cols * 0.55 ? -1 : 1;
+    // Uniform unidirectional parallel meteor shower trajectory (upper-left -> lower-right ↘)
+    const dir = 1;
     meteors.push({
       col: c,
       row: r,
@@ -860,7 +890,19 @@ export function mountCitySkyline(options) {
       vy: 9 + Math.random() * 5,
       age: 0,
       life: 0.68 + Math.random() * 0.34,
+      userTriggered: Boolean(userTriggered),
     });
+  }
+
+  function spawnClickedMeteor(rawCol, rawRow) {
+    const minC = -extraColsLeft + 4;
+    const maxC = activeCity.cols + extraColsRight - 4;
+    const c = clamp(rawCol, minC, maxC);
+    if (rawRow >= 0 && rawRow < activeCity.waterlineRow - 4) {
+      spawnMeteor(c, clamp(rawRow, 2, 22), true);
+    } else {
+      spawnMeteor(c, undefined, true);
+    }
   }
 
   function spawnUserLantern(rawCol, rawRow) {
@@ -1016,15 +1058,18 @@ export function mountCitySkyline(options) {
       // Beijing: launch a crimson-red & imperial-gold ASCII firework toward the clicked sky point
       spawnFirework(c, r);
     } else if (activeCity.id === "dubai") {
-      // Dubai: trigger Burj Khalifa LED Finale Surge + crown laser boost
-      dubaiSurgeAge = 0;
+      // Dubai: always drop a desert shooting star; only trigger Burj Khalifa LED Finale Surge
+      // once Burj Khalifa has completely risen (never in empty sky before t >= burjReadyTime!)
+      spawnClickedMeteor(c, r);
+      if (isDubaiTowerReady(activeCity, simTime)) {
+        dubaiSurgeAge = 0;
+      }
     } else if (activeCity.id === "seoul") {
       // Seoul: restrained silver-gold Han River firework + sequential Hunminjeongeum preface starlight
       spawnSeoulFirework(c, r);
-    } else if (r >= 0 && r < activeCity.waterlineRow - 6) {
-      spawnMeteor(clamp(c, 4, activeCity.cols - 4), clamp(r, 2, 18));
     } else {
-      spawnMeteor();
+      // Singapore & Bangalore: full-widescreen shooting star right where clicked
+      spawnClickedMeteor(c, r);
     }
     ensureRunning();
   });
@@ -1359,11 +1404,13 @@ export function mountCitySkyline(options) {
   }
 
   function renderMeteors(city, bgReveal) {
-    if (bgReveal <= 0.08 || meteors.length === 0) return;
+    if (meteors.length === 0) return;
     for (let i = 0; i < meteors.length; i++) {
       const m = meteors[i];
+      const visGate = m.userTriggered ? Math.max(bgReveal, 0.92) : bgReveal;
+      if (visGate <= 0.05) continue;
       const p = clamp(m.age / m.life, 0, 1);
-      const env = Math.sin(p * Math.PI) * bgReveal;
+      const env = Math.sin(p * Math.PI) * visGate;
       const trailGlyphs = ["*", "+", "-", "·", "."];
       for (let k = 0; k < trailGlyphs.length; k++) {
         const tc = m.col - m.vx * (k * 0.018);
@@ -1515,10 +1562,10 @@ export function mountCitySkyline(options) {
    * and click-triggered golden-white LED Finale Surge (#85).
    */
   function applyDubaiLedFacadeShow(city, t) {
-    if (city.id !== "dubai") return;
-    const ledShowReveal = smoothstep(10.0, 11.4, t);
+    if (!isDubaiTowerReady(city, t)) return;
+    const ledShowReveal = smoothstep(city.burjReadyTime, city.burjReadyTime + 1.4, t);
+    if (ledShowReveal <= 0.01) return;
     const hasSurge = dubaiSurgeAge >= 0 && dubaiSurgeAge <= 1.45;
-    if (ledShowReveal <= 0.01 && !hasSurge) return;
 
     const cols = city.cols;
     const luxuryPalette = [
@@ -1617,11 +1664,12 @@ export function mountCitySkyline(options) {
    * strictly BEFORE renderCloud so lasers never obscure Google Cloud).
    */
   function renderDubaiLaserShow(city, t) {
-    if (city.id !== "dubai") return;
-    const ledShowReveal = smoothstep(10.0, 11.4, t);
+    if (!isDubaiTowerReady(city, t)) return;
+    const ledShowReveal = smoothstep(city.burjReadyTime, city.burjReadyTime + 1.4, t);
+    if (ledShowReveal <= 0.01) return;
     const hasSurge = dubaiSurgeAge >= 0 && dubaiSurgeAge <= 1.45;
     const surgeBoost = hasSurge ? Math.sin(clamp(dubaiSurgeAge / 1.45, 0, 1) * Math.PI) * 0.22 : 0;
-    const master = clamp(ledShowReveal + surgeBoost * 0.6, 0, 1);
+    const master = clamp(ledShowReveal + surgeBoost * 0.6 * ledShowReveal, 0, 1);
     if (master <= 0.01) return;
 
     const surgeIntensity = 1 + surgeBoost * 2.2;
@@ -2822,6 +2870,224 @@ export function mountCitySkyline(options) {
   }
 
   /**
+   * Renders Singapore's iconic Merlion Park statue & live parabolic fountain jet
+   * on the left Marina Bay foreground pier, with animated water pulses, spray mist,
+   * expanding splash ripples, and a shimmering water reflection below the pier.
+   */
+  const MERLION_PAL = {
+    W: [244, 250, 255, true, 0.85, true], // lit pearl-white marble
+    M: [207, 228, 245, true, 0.45, false], // moonlit silver-white marble
+    m: [127, 168, 200, false, 0.0, false], // shaded mane / marble depth
+    e: [255, 243, 204, true, 0.9, true], // warm lion eye glint
+    I: [140, 232, 255, true, 0.8, true], // glacial-cyan water nozzle / wave-crest rim
+    P: [168, 196, 220, false, 0.0, false], // stone pier highlight rim
+    p: [90, 124, 150, false, 0.0, false], // stone pier body
+    g: [255, 226, 154, true, 0.72, false], // warm promenade uplight accent
+  };
+
+  const MERLION_ART = [
+    ["    .-^^-.     ", "    mWWWWm     "], // row 44: lion ears & crown
+    ["   /((( o\\_    ", "   mMMM eWW    "], // row 45: flowing mane, eye & snout
+    ["  (((((( =:>   ", "  mMMMMM WWI   "], // row 46: roaring mouth spouting water
+    ["   \\((((__/    ", "   mMMMMWWW    "], // row 47: lower jaw & mane beard
+    ["   /(((((\\     ", "   mMMMMMW     "], // row 48: proud arched chest
+    ["  /((:)): )    ", "  mMMMWWW W    "], // row 49: curved scaly fish torso
+    [" /((:::::/     ", " mMMMWWWMW     "], // row 50: tapered fish body
+    ["<==:::::/      ", "WMMMWWWMW      "], // row 51: upward-swept tail fin
+    [" \\_____/       ", " IWWWWWm       "], // row 52: wave-crest plinth
+    ["___/=====\\___  ", "pppPgWWWgPppp  "], // row 53: stepped Merlion pedestal
+    ["[=============\\", "PppPggPPPggPppP"], // row 54: Merlion Park stone pier
+    ["|-------------|", "ppppppppppppppp"], // row 55: pier bayfront wall
+  ];
+
+  function renderSingaporeMerlion(city, t, bgReveal) {
+    if (!city.merlion || bgReveal <= 0.04) return;
+
+    const ml = city.merlion;
+    const statueReveal = smoothstep(0.05, 0.62, bgReveal);
+    if (statueReveal <= 0.01) return;
+
+    const totalRows = MERLION_ART.length;
+    const baseRow = ml.startRow;
+    const baseCol = ml.startCol;
+
+    // 1. Subtle theatrical night floodlight halo illuminating the marble Merlion
+    const haloCx = originX + (baseCol + 6.8) * cellW;
+    const haloCy = originY + (baseRow + 4.4) * cellH;
+    const haloRad = cellH * 5.8;
+    const flood = gctx.createRadialGradient(haloCx, haloCy, cellH * 0.4, haloCx, haloCy, haloRad);
+    flood.addColorStop(0, `rgba(218, 242, 255, ${(0.22 * statueReveal).toFixed(4)})`);
+    flood.addColorStop(0.55, `rgba(118, 210, 242, ${(0.09 * statueReveal).toFixed(4)})`);
+    flood.addColorStop(1, "rgba(118, 210, 242, 0)");
+    gctx.fillStyle = flood;
+    gctx.fillRect(haloCx - haloRad, haloCy - haloRad, haloRad * 2, haloRad * 2);
+
+    // 2. Sculpted Merlion statue + Merlion Park stone pier (bottom-up reveal)
+    // Extend left promenade edge cleanly to col 0 on pier rows (rows 54..55)
+    for (let rIdx = totalRows - 1; rIdx >= 0; rIdx--) {
+      const fromBottom = (totalRows - 1 - rIdx) / Math.max(1, totalRows - 1);
+      const rowAlpha = clamp((statueReveal * 1.32 - fromBottom * 0.72) / 0.45, 0, 1);
+      if (rowAlpha <= 0.02) continue;
+
+      const row = baseRow + rIdx;
+      const y = originY + row * cellH;
+      const [chars, colors] = MERLION_ART[rIdx];
+
+      // Mask Marina Bay water reflections across the full interior span of each statue/pier row
+      let firstCol = -1;
+      let lastCol = -1;
+      for (let i = 0; i < chars.length; i++) {
+        if (chars[i] !== " " && colors[i] !== " " && MERLION_PAL[colors[i]]) {
+          if (firstCol < 0) firstCol = i;
+          lastCol = i;
+        }
+      }
+      if (firstCol >= 0) {
+        const mx = originX + (baseCol + firstCol - 0.15) * cellW;
+        const mw = (lastCol - firstCol + 1.3) * cellW;
+        bctx.fillStyle = `rgba(5, 19, 26, ${(0.92 * rowAlpha).toFixed(3)})`;
+        bctx.fillRect(mx, y - cellH * 0.06, mw, cellH * 1.12);
+      }
+
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const code = colors[i];
+        if (ch === " " || code === " " || !MERLION_PAL[code]) continue;
+
+        const col = baseCol + i;
+        const x = originX + col * cellW;
+
+        const [cr, cg, cb, isGlow, gStr, isBold] = MERLION_PAL[code];
+        // Gentle warm pulse on promenade uplights
+        const uplightPulse = code === "g" ? 0.82 + 0.18 * Math.sin(t * 2.2 + i * 0.9) : 1.0;
+        drawGlyph(ch, x, y, cr, cg, cb, 0.96 * rowAlpha * uplightPulse, isGlow, gStr, isBold);
+      }
+    }
+
+    // 3. Soft shimmering marble reflection just below the Merlion Park pier (rows 56..58)
+    for (let d = 0; d < 3; d++) {
+      const refRow = baseRow + totalRows + d;
+      if (refRow >= city.rows) break;
+      const y = originY + refRow * cellH;
+      const atten = (1 - d * 0.28) * 0.34 * statueReveal;
+      const sway = Math.sin(t * 1.5 + d * 1.1) * 0.45;
+      for (let i = 2; i <= 11; i++) {
+        if (modPos(i + d, 2) !== 0) continue;
+        const x = originX + (baseCol + i + sway) * cellW;
+        const ch = d === 0 ? "=" : "~";
+        drawGlyph(ch, x, y, 178, 224, 242, atten, d === 0, 0.35);
+      }
+    }
+
+    // 4. Live animated parabolic fountain water jet spouting from Merlion's mouth
+    const jetReveal = smoothstep(0.45, 0.96, bgReveal);
+    if (jetReveal <= 0.02) return;
+
+    const startC = ml.mouthCol;
+    const startR = ml.mouthRow;
+    const endC = ml.splashCol;
+    const endR = ml.splashRow;
+    const SAMPLES = 18;
+
+    for (let s = 0; s <= SAMPLES; s++) {
+      const u = s / SAMPLES;
+      if (u > jetReveal) break;
+
+      const colF = startC + (endC - startC) * u;
+      const rowF = startR + (endR - startR) * (u * u) - 2.6 * u * (1 - u);
+      const x = originX + colF * cellW;
+      const y = originY + rowF * cellH;
+
+      // Fast-moving pressurized water pulse racing from mouth to bay
+      const flow = Math.sin(u * 14.0 - t * 11.5);
+      const crest = flow > 0.28;
+      const ch =
+        u < 0.22
+          ? crest
+            ? "="
+            : "~"
+          : u < 0.52
+            ? crest
+              ? "~"
+              : "-"
+            : u < 0.78
+              ? crest
+                ? "\\"
+                : ":"
+              : crest
+                ? "\\"
+                : "|";
+
+      const isBright = crest || u < 0.16;
+      const r = isBright ? 240 : 140;
+      const g = isBright ? 252 : 232;
+      const b = 255;
+      const alpha = (isBright ? 0.94 : 0.68) * smoothstep(0.0, 0.12, jetReveal - u + 0.12);
+      drawGlyph(ch, x, y, r, g, b, alpha, true, isBright ? 0.82 : 0.48, isBright);
+
+      // Fine shimmering spray mist slightly trailing the main parabolic arc
+      if (s % 3 === 1 && u > 0.12 && u < 0.94) {
+        const mistDrift = Math.sin(t * 7.2 + s * 1.9) * 0.24;
+        const mx = originX + (colF + mistDrift) * cellW;
+        const my = originY + (rowF + 0.42 + Math.abs(mistDrift) * 0.4) * cellH;
+        const mCh = s % 6 === 1 ? "." : "·";
+        drawGlyph(mCh, mx, my, 128, 236, 245, 0.46 * alpha, true, 0.35);
+      }
+    }
+
+    // 5. Animated splash plume, hopping droplets & expanding concentric ripples in Marina Bay
+    const splashAlpha = smoothstep(0.84, 1.0, jetReveal);
+    if (splashAlpha <= 0.02) return;
+
+    const sx = originX + endC * cellW;
+    const sy = originY + endR * cellH;
+
+    // Foaming impact glow
+    const spRad = cellH * 2.4;
+    const spGlow = gctx.createRadialGradient(sx, sy, cellH * 0.15, sx, sy, spRad);
+    spGlow.addColorStop(0, `rgba(215, 250, 255, ${(0.34 * splashAlpha).toFixed(4)})`);
+    spGlow.addColorStop(0.55, `rgba(92, 230, 200, ${(0.12 * splashAlpha).toFixed(4)})`);
+    spGlow.addColorStop(1, "rgba(92, 230, 200, 0)");
+    gctx.fillStyle = spGlow;
+    gctx.fillRect(sx - spRad, sy - spRad, spRad * 2, spRad * 2);
+
+    // Core churning foam at impact point
+    const corePulse = 0.72 + 0.28 * Math.sin(t * 10.5);
+    drawGlyph(corePulse > 0.82 ? "*" : "o", sx, sy, 255, 255, 255, 0.95 * splashAlpha, true, 0.9, true);
+    drawGlyph("~", sx - cellW * 0.95, sy + cellH * 0.08, 175, 245, 255, 0.78 * splashAlpha, true, 0.55);
+    drawGlyph("~", sx + cellW * 0.95, sy + cellH * 0.08, 175, 245, 255, 0.78 * splashAlpha, true, 0.55);
+
+    // Hopping splash droplets arcing upward around impact
+    const DROPLETS = 6;
+    for (let k = 0; k < DROPLETS; k++) {
+      const cycle = (t * 2.4 + k * 0.37) % 1.0;
+      const spread = (k - (DROPLETS - 1) * 0.5) * 0.62;
+      const dc = endC + spread * (0.6 + cycle * 1.15);
+      const dr = endR - 1.35 * Math.sin(cycle * Math.PI) - 0.15;
+      const da = Math.sin(cycle * Math.PI) * 0.85 * splashAlpha;
+      if (da > 0.08) {
+        const dCh = cycle < 0.35 ? "*" : cycle < 0.7 ? "·" : ".";
+        drawGlyph(dCh, originX + dc * cellW, originY + dr * cellH, 230, 252, 255, da, true, 0.6);
+      }
+    }
+
+    // 3 phase-staggered expanding horizontal ripple rings on Marina Bay
+    for (let ring = 0; ring < 3; ring++) {
+      const p = (t * 0.72 + ring / 3) % 1.0;
+      const radCols = 1.1 + p * 4.2;
+      const ra = (1 - p) * 0.72 * splashAlpha;
+      if (ra <= 0.05) continue;
+      const ry = originY + (endR + 0.35 + p * 0.65) * cellH;
+      drawGlyph("(", originX + (endC - radCols) * cellW, ry, 130, 234, 242, ra, true, 0.45);
+      drawGlyph(")", originX + (endC + radCols) * cellW, ry, 130, 234, 242, ra, true, 0.45);
+      if (p < 0.65) {
+        drawGlyph("~", originX + (endC - radCols * 0.52) * cellW, ry + cellH * 0.12, 92, 230, 200, ra * 0.75, false);
+        drawGlyph("~", originX + (endC + radCols * 0.52) * cellW, ry + cellH * 0.12, 92, 230, 200, ra * 0.75, false);
+      }
+    }
+  }
+
+  /**
    * Renders Taiwan's rain-slicked Taipei evening stone boulevard (`===`, `---`, `·`, `|`)
    * softly reflecting Taipei 101's jade-gold & CKS Memorial Hall's white-cobalt glow
    * (distinct from rippling water!).
@@ -3311,6 +3577,7 @@ export function mountCitySkyline(options) {
         renderDubaiDunes(city, t, bgReveal);
       } else if (city.groundType === "water") {
         renderSingaporeWater(city, t, bgReveal, cloudState);
+        renderSingaporeMerlion(city, t, bgReveal);
       } else if (city.groundType === "avenue") {
         renderTaiwanAvenue(city, t, bgReveal);
       } else if (city.groundType === "marble-courtyard") {

@@ -1,4 +1,5 @@
-// Singapore — Hand-Crafted 5-Icon Marina Bay Panorama (92 x 62 grid)
+// Singapore — Hand-Crafted 6-Icon Marina Bay Panorama (92 x 62 grid)
+// Esplanade, Marina Bay Sands, ArtScience Museum, Gardens by the Bay, Singapore Flyer + Merlion Park
 // Pure ES module, zero external imports, zero DOM or script-injection sinks.
 
 export const SINGAPORE_CITY = (() => {
@@ -350,6 +351,14 @@ export const SINGAPORE_CITY = (() => {
     rows: 62,
     waterlineRow: 43,
     moon: null,
+    merlion: {
+      startRow: 44,
+      startCol: 1,
+      mouthCol: 12.4,
+      mouthRow: 46.15,
+      splashCol: 24.5,
+      splashRow: 53.35,
+    },
     cloudFloat: { row: 5, centerCol: 46, driftAmp: 12 },
     phases: [
       {
